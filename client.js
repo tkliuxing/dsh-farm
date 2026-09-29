@@ -4,17 +4,27 @@
  * A hand-written module-table bundle: executes by registering its factory with
  * window.__ModuleLoader__; the factory's exports are the client plugin.
  *
- * UI, in one of two homes:
- *  - DSH-better-sidebar installed → the panel is registered as a sidebar tab
- *    through its `betterSidebar` service, and the two slots below render null
- *  - otherwise → dsh-farm's own footer button + right-hand drawer (below)
+ * UI, in one of three homes, resolved at runtime (first available wins):
+ *  - 'rightbar' → a tab type in the **official right Sidebar** (the DSH
+ *    "侧边栏" / `ui-sidebar-right`): `ctx.sidebarRightTabs` owns the type, a
+ *    `guide` entry puts the 🚜 capsule on that column's guide page — which is
+ *    the column's own entry point — and picking it opens this tab. This is the
+ *    current DSH model and the preferred home.
+ *  - 'better'   → DSH-better-sidebar installed: the panel is registered as a
+ *    tab through its `betterSidebar` service.
+ *  - 'drawer'   → neither of the above: dsh-farm's own sidebar-foot button
+ *    plus its right-hand drawer.
  *
- * Slots:
- *  - sidebar.footer.action → 🚜 button with a running-services badge
- *  - shell.overlay         → overview drawer grouped by workspace with
- *                            start/stop/restart, delete, multi-select delete
- *                            behind a confirm dialog, log follow (SSE),
- *                            search and export
+ * Seats:
+ *  - the tab type's `guide` entry → 🚜 capsule with a running-services badge
+ *    on the right Sidebar's guide page, which is the column's own entry point
+ *  - sidebar.right.pane.tab        (keyed by the type id) → the tab body:
+ *    services grouped by workspace with start/stop/restart, delete,
+ *    multi-select delete behind a confirm dialog, log follow (SSE), search
+ *    and export
+ *  - sidebar.right.pane.tab.title  (keyed by the type id) → the 🚜 chip
+ *  - sidebar.footer.action / shell.overlay → the fallback home (render
+ *    nothing in the other two)
  *
  * No imports: `require` resolves the platform seed table (react).
  */
@@ -34,15 +44,35 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
     selecting: false,       // multi-select mode in the overview
     selected: new Set(),    // service ids ticked while selecting
     confirm: undefined,     // { ids: [], busy, error } — pending delete confirmation
-    hosted: false,          // true while DSH-better-sidebar renders the panel
+    home: 'drawer',         // 'rightbar' | 'better' | 'drawer' — where the UI lives
     listeners: new Set(),
     emit() { for (const fn of [...this.listeners]) { try { fn() } catch {} } },
     subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn) },
   }
 
+  // One shared 5s poll, kept alive by the mounted surfaces rather than by a
+  // single component: the home that is on screen may be any of the three, and
+  // a badge must stay fresh in all of them.
+  let pollers = 0
+  let pollTimer
   const useFarm = () => {
     const [, force] = React.useReducer((n) => n + 1, 0)
-    React.useEffect(() => store.subscribe(force), [])
+    React.useEffect(() => {
+      const unsubscribe = store.subscribe(force)
+      pollers += 1
+      if (pollers === 1) {
+        refresh()
+        pollTimer = setInterval(refresh, 5000)
+      }
+      return () => {
+        unsubscribe()
+        pollers -= 1
+        if (pollers === 0 && pollTimer !== undefined) {
+          clearInterval(pollTimer)
+          pollTimer = undefined
+        }
+      }
+    }, [])
   }
 
   const refresh = async () => {
@@ -132,6 +162,9 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
   // ── shared styles (theme variables only) ────────────────────────────────
   const CSS = `
 .dshfarm-badge{position:relative;display:inline-flex;align-items:center;justify-content:center}
+.dshfarm-icon{font-family:'Apple Color Emoji','Segoe UI Emoji',sans-serif}
+/* Tab-chip glyph: the title seat's text follows it. */
+.dshfarm-chip{margin-right:6px}
 .dshfarm-dot{position:absolute;top:-2px;right:-4px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;
   background:var(--dsw-alias-accent-brand,#4c7dff);color:var(--dsw-alias-label-on-accent,#fff);
   font-size:10px;line-height:14px;text-align:center;font-weight:600}
@@ -201,14 +234,41 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
 
   const runningCount = () => store.services.filter((s) => ['running', 'starting', 'unhealthy'].includes(s.status)).length
 
-  // ── sidebar footer button ───────────────────────────────────────────────
+  // ── right-Sidebar tab type: the guide capsule's glyph ───────────────────
+  // `entry.icon` is rendered as <Icon size={22|26} /> inside a fixed 26px box
+  // (ui-sidebar-right's guide), so this is a plain glyph component — and it
+  // carries the running-services badge, since the guide is the column's only
+  // way in.
+  const FarmGuideIcon = (props) => {
+    useFarm()
+    ensureStyles()
+    const n = runningCount()
+    const size = (props && props.size) || 22
+    return React.createElement('span', {
+      className: 'dshfarm-badge dshfarm-icon',
+      style: { fontSize: Math.round(size * 0.85), lineHeight: 1 },
+    },
+      '🚜',
+      n > 0 ? React.createElement('span', { className: 'dshfarm-dot' }, String(n)) : null,
+    )
+  }
+
+  // ── right-Sidebar tab chip: 🚜 + the title captured when the tab opened ──
+  const FarmRightTitle = (props) => {
+    const info = props.useTabInfo()
+    return React.createElement(React.Fragment, null,
+      React.createElement('span', { className: 'dshfarm-icon dshfarm-chip' }, '🚜'),
+      info.tab.title,
+    )
+  }
+
+  // ── sidebar footer button (fallback home only) ──────────────────────────
   const FarmButton = (props) => {
     useFarm()
     ensureStyles()
-    React.useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t) }, [])
-    // Hosted, the tab is the way in — but this component stays mounted so the
-    // poll above keeps feeding the tab's badge. Hooks first, then stand down.
-    if (store.hosted) return null
+    // In the hosted homes the guide capsule / tab is the way in; this component
+    // stays mounted only so the footer slot keeps its registration.
+    if (store.home !== 'drawer') return null
     const n = runningCount()
     const wide = props && props.wide
     return React.createElement('button', {
@@ -342,9 +402,9 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
   }
 
   // ── panel: the service list itself, free of any chrome ──────────────────
-  // Rendered by the fallback drawer and, when DSH-better-sidebar is installed,
-  // by our tab inside it. `hosted` decides only whether the panel draws its own
-  // close affordance; everything below the head row is identical either way.
+  // Rendered by all three homes. `hosted` decides only whether the panel draws
+  // its own close affordance; everything below the head row is identical
+  // either way.
   const FarmPanel = (props) => {
     useFarm()
     ensureStyles()
@@ -485,10 +545,10 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
     )
   }
 
-  // ── fallback host: dsh-farm's own right-hand drawer ───────────────────
+  // ── fallback home: dsh-farm's own right-hand drawer ───────────────────
   const Overview = () => {
     useFarm()
-    if (store.hosted || !store.open) return null
+    if (store.home !== 'drawer' || !store.open) return null
     const closeAll = () => {
       if (store.confirm) return // the dialog owns the screen until answered
       closeLogView()
@@ -510,10 +570,19 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
     )
   }
 
-  // ── hosted: the page better-sidebar renders inside its own tab ──────────
+  // ── right-Sidebar home: the tab body the official column docks ──────────
+  // The column owns the chip, its close control, docking and persistence; this
+  // is only the body swapped in when our tab is open. Same panel the other
+  // homes render, without our own close affordance.
+  const FarmRightTab = () => React.createElement(React.Fragment, null,
+    React.createElement(FarmPanel, { hosted: true }),
+    React.createElement(ConfirmDelete),
+  )
+
+  // ── hosted tab home: the page better-sidebar renders in its own tab ────
   const FarmTab = (props) => {
-    // The footer button keeps the 5s poll alive for the tab badge, so a hidden
-    // tab costs nothing extra; refresh once when it comes back into view.
+    // Any mounted surface keeps the shared poll alive, so a hidden tab costs
+    // nothing extra; refresh once when it comes back into view.
     const visible = !props || props.visible !== false
     React.useEffect(() => { if (visible) refresh() }, [visible])
     return React.createElement(React.Fragment, null,
@@ -526,6 +595,27 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
   module.exports = {
     inject: ['slots'],
     apply(ctx) {
+      // ── home resolution ───────────────────────────────────────────────
+      // Exactly one of the three surfaces below is live at a time, each
+      // reporting itself: `hasRightbar` once the official right Sidebar gives
+      // us its tab registry, `hasBetter` when better-sidebar accepted our tab.
+      // Neither is a hard dependency.
+      //
+      // The official column outranks better-sidebar: the two do not overlap
+      // (better-sidebar replaces the *left* column), and this plugin's subject
+      // is a docked panel, which is exactly what the right Sidebar is.
+      let hasRightbar = false
+      let hasBetter = false
+
+      const resolveHome = () => {
+        const next = hasRightbar ? 'rightbar' : hasBetter ? 'better' : 'drawer'
+        if (next === store.home) return
+        store.home = next
+        store.open = false        // the drawer has no reason to stay open
+        store.emit()
+      }
+
+      // ── fallback home: footer button + overlay drawer ──────────────────
       ctx.effect(() => ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
         { name: 'sidebar.footer.action', id: 'dsh-farm-button', order: 100, label: 'dsh-farm' },
         FarmButton,
@@ -536,14 +626,73 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
         Overview,
       )), 'dsh-farm: overview drawer')
 
-      // ── optional host: DSH-better-sidebar ─────────────────────────────
-      // `betterSidebar` is deliberately NOT in `inject`. A declared service
-      // that is missing parks the whole plugin, which would take the fallback
-      // UI down with it — the opposite of what we want. ctx.get() is the
-      // runtime's optional-lookup hook: undefined when the plugin is absent.
+      // ── optional homes ────────────────────────────────────────────────
+      // Neither `sidebarRightTabs` nor `betterSidebar` is in `inject`: a
+      // declared service that is missing parks the whole plugin, which would
+      // take the fallback UI down with it — the opposite of what we want.
+      // ctx.get() is the runtime's optional-lookup hook (undefined when the
+      // provider is absent), and `internal/service` catches either provider
+      // arriving or leaving later, in both directions.
       if (typeof ctx.get !== 'function') return   // host predates optional lookup
 
-      let release   // live tab registration, while we have one
+      // ── preferred home: a tab type in the official right Sidebar ───────
+      // Two-stage registration, the same public path the shipped Files,
+      // Terminal and Browser types use: `ctx.sidebarRightTabs.register` owns
+      // the type and its `guide` entry — that capsule *is* the column's entry
+      // point — and the keyed `sidebar.right.pane.tab` seat owns the body,
+      // under the type's own `id`.
+      const FARM_ID = 'dsh-farm'   // implementation identity, and the body's key
+      const FARM_KIND = 'farm'     // what `openTab` names
+      let releaseRightbar
+
+      const claimRightbar = (tabs) => {
+        const disposers = []
+        try {
+          disposers.push(tabs.register({
+            id: FARM_ID,
+            kind: FARM_KIND,
+            // No `patterns`: this is a page type, opened by kind, not a viewer.
+            title: () => 'Farm',
+            guide: [{
+              id: 'services',
+              order: 30,
+              title: () => 'Farm',
+              description: () => 'start, stop and watch project services',
+              icon: FarmGuideIcon,
+            }],
+          }))
+          disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
+            { name: 'sidebar.right.pane.tab', key: FARM_ID },
+            FarmRightTab,
+          )))
+          disposers.push(ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register(
+            { name: 'sidebar.right.pane.tab.title', key: FARM_ID },
+            FarmRightTitle,
+          )))
+        } catch (err) {
+          for (const dispose of disposers.reverse()) { try { dispose() } catch {} }
+          console.error('[dsh-farm] right-sidebar tab registration failed:', err)
+          return false
+        }
+        return () => { for (const dispose of disposers.reverse()) { try { dispose() } catch {} } }
+      }
+
+      const syncRightbar = () => {
+        let tabs
+        try { tabs = ctx.get('sidebarRightTabs') } catch { tabs = undefined }
+        if (tabs && !releaseRightbar) {
+          const release = claimRightbar(tabs)
+          if (release) { releaseRightbar = release; hasRightbar = true }
+        } else if (!tabs && releaseRightbar) {
+          // The provider unloaded and its registry went with it; drop the
+          // handle rather than calling a disposer into a dead registry.
+          releaseRightbar = undefined
+          hasRightbar = false
+        }
+        resolveHome()
+      }
+
+      let release   // live better-sidebar tab registration, while we have one
 
       const claim = (bs) => {
         const tab = {
@@ -574,26 +723,28 @@ window.__ModuleLoader__.load({ id: 'dsh-farm', factory: (require) => {
             console.error('[dsh-farm] better-sidebar tab registration failed:', err)
             return
           }
-          store.open = false        // the drawer has no reason to stay open
-          store.hosted = true
-          store.emit()
+          hasBetter = true
         } else if (!bs && release) {
           // The provider unloaded and its registry went with it; drop the
           // handle rather than calling a disposer into a dead registry.
           release = undefined
-          store.hosted = false
-          store.emit()
+          hasBetter = false
         }
+        resolveHome()
       }
 
+      syncRightbar()
       sync()
-      ctx.on('internal/service', (name) => { if (name === 'betterSidebar') sync() })
+      ctx.on('internal/service', (name) => {
+        if (name === 'sidebarRightTabs') syncRightbar()
+        else if (name === 'betterSidebar') sync()
+      })
       ctx.effect(() => () => {
-        if (!release) return
-        try { release() } catch {}
-        release = undefined
-        store.hosted = false
-      }, 'dsh-farm: release the better-sidebar tab')
+        if (releaseRightbar) { try { releaseRightbar() } catch {} releaseRightbar = undefined }
+        hasRightbar = false
+        if (release) { try { release() } catch {} release = undefined }
+        hasBetter = false
+      }, 'dsh-farm: release the hosted tabs')
     },
   }
 

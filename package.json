@@ -1,7 +1,7 @@
 {
   "name": "dsh-farm",
   "version": "0.1.0",
-  "description": "DSH service farm: register, start, stop, restart and watch long-running project services. Left-sidebar entry + overview drawer (per-workspace groups, live log follow, search, export); farm_status/start/stop/restart/logs/register tools for the agent; optional farm.yaml declaration per workspace.",
+  "description": "DSH service farm: register, start, stop, restart and watch long-running project services. A tab in the official DSH right Sidebar (a guide entry beside Files / Browser / Terminal; falls back to a footer button + drawer, or a DSH-better-sidebar tab) with per-workspace groups, live log follow, search and export; farm_status/start/stop/restart/logs/register tools for the agent; optional farm.yaml declaration per workspace.",
   "type": "module",
   "main": "index.js",
   "exports": {
