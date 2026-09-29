@@ -48,6 +48,23 @@ function serviceId(workspace, serviceName) {
 //       autoRestart: true
 //       env:                    # optional flat string map
 //         KEY: value
+//
+// A scalar may be wrapped in one matching pair of quotes, which are then
+// syntax. Quotes that are part of the value stay put: `command: node -e
+// "console.log(1)"` must keep its `"`. The naive `^["']|["']$` strip this used
+// to do truncated every such command (and every `'a' && 'b'`), so the closing
+// quote is only syntax when it is the last character AND no unescaped quote of
+// the same kind appears between the pair.
+function unquoteYamlScalar(value) {
+  const text = value.trim()
+  const quote = text[0]
+  if (text.length < 2) return text
+  if (quote !== '"' && quote !== "'") return text
+  if (text[text.length - 1] !== quote) return text
+  if (text.slice(1, -1).includes(quote)) return text
+  return text.slice(1, -1)
+}
+
 export function parseFarmYaml(text, workspace) {
   const services = {}
   let current = null
@@ -76,9 +93,9 @@ export function parseFarmYaml(text, workspace) {
     const [, key, value] = kv
     if (indent <= 4) inEnv = false
     if (key === 'env' && value === '') { inEnv = true; continue }
-    if (inEnv && indent >= 6) { services[current].env[key] = value.replace(/^["']|["']$/g, ''); continue }
-    if (key === 'command') services[current].command = value.replace(/^["']|["']$/g, '')
-    else if (key === 'cwd') services[current].cwd = value.replace(/^["']|["']$/g, '')
+    if (inEnv && indent >= 6) { services[current].env[key] = unquoteYamlScalar(value); continue }
+    if (key === 'command') services[current].command = unquoteYamlScalar(value)
+    else if (key === 'cwd') services[current].cwd = unquoteYamlScalar(value)
     else if (key === 'autoRestart') services[current].autoRestart = value === 'true'
   }
   const out = {}
